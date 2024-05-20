@@ -1,6 +1,8 @@
 # paya
 AOS bot
 
+My PID: 0lf_Mae6Ogo_kXrSJGINK1NjwFoYRNns376iOCj-geA
+
 To start bot follow instructions below
 
 ```aos```
