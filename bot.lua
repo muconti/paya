@@ -1,3 +1,4 @@
+-- My PID = 0lf_Mae6Ogo_kXrSJGINK1NjwFoYRNns376iOCj-geA
 -- Initializing global variables to store the latest game state and game host process.
 LatestGameState = LatestGameState or nil
 InAction = InAction or false -- Prevents the agent from taking multiple actions at once.
