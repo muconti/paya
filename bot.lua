@@ -4,6 +4,10 @@ LatestGameState = LatestGameState or nil
 InAction = InAction or false -- Prevents the agent from taking multiple actions at once.
 CurrentTarget = CurrentTarget or nil -- Store the current target
 AttackCooldown = AttackCooldown or 0 -- Cooldown to prevent immediate re-attack
+AttackCount = 0 -- Count of consecutive attacks on the current target
+OpponentsAttacked = 0 -- Count of opponents attacked
+IsResting = false -- Flag indicating if the bot is resting
+RanAway = false -- Flag indicating if the bot has run away before resting
 
 Logs = Logs or {}
 
@@ -29,30 +33,6 @@ function inRange(x1, y1, x2, y2, range)
     return math.abs(x1 - x2) <= range and math.abs(y1 - y2) <= range
 end
 
--- Checks if a given position is walkable (not an obstacle)
-function isWalkable(x, y, obstacles)
-    for _, obstacle in ipairs(obstacles) do
-        if obstacle.x == x and obstacle.y == y then
-            return false
-        end
-    end
-    return true
-end
-
--- Find the nearest power-up
-function findNearestPowerUp(player, powerUps)
-    local nearest = nil
-    local minDist = math.huge
-    for _, powerUp in ipairs(powerUps) do
-        local dist = math.sqrt((player.x - powerUp.x)^2 + (player.y - powerUp.y)^2)
-        if dist < minDist then
-            nearest = powerUp
-            minDist = dist
-        end
-    end
-    return nearest
-end
-
 -- Find the nearest opponent
 function findNearestOpponent(player, players)
     local nearest = nil
@@ -67,85 +47,6 @@ function findNearestOpponent(player, players)
         end
     end
     return nearest
-end
-
--- A* Pathfinding algorithm
-function aStar(start, goal, obstacles)
-    local openSet = {start}
-    local cameFrom = {}
-    local gScore = {[start] = 0}
-    local fScore = {[start] = heuristicCostEstimate(start, goal)}
-
-    while #openSet > 0 do
-        local current = openSet[1]
-        for i = 2, #openSet do
-            if fScore[openSet[i]] < fScore[current] then
-                current = openSet[i]
-            end
-        end
-
-        if current.x == goal.x and current.y == goal.y then
-            return reconstructPath(cameFrom, current)
-        end
-
-        table.remove(openSet, table.find(openSet, current))
-        for _, neighbor in ipairs(getNeighbors(current, obstacles)) do
-            local tentativeGScore = gScore[current] + distBetween(current, neighbor)
-            if not gScore[neighbor] or tentativeGScore < gScore[neighbor] then
-                cameFrom[neighbor] = current
-                gScore[neighbor] = tentativeGScore
-                fScore[neighbor] = gScore[neighbor] + heuristicCostEstimate(neighbor, goal)
-                if not isInList(openSet, neighbor) then
-                    table.insert(openSet, neighbor)
-                end
-            end
-        end
-    end
-
-    return nil -- No path found
-end
-
--- Heuristic cost estimate for A* 
-function heuristicCostEstimate(start, goal)
-    return math.abs(start.x - goal.x) + math.abs(start.y - goal.y)
-end
-
--- Reconstruct path for A* from cameFrom map
-function reconstructPath(cameFrom, current)
-    local totalPath = {current}
-    while cameFrom[current] do
-        current = cameFrom[current]
-        table.insert(totalPath, 1, current)
-    end
-    return totalPath
-end
-
--- Get neighbors for A* considering obstacles
-function getNeighbors(node, obstacles)
-    local neighbors = {}
-    local directions = {{1,0}, {0,1}, {-1,0}, {0,-1}}
-    for _, dir in ipairs(directions) do
-        local neighbor = {x = node.x + dir[1], y = node.y + dir[2]}
-        if isWalkable(neighbor.x, neighbor.y, obstacles) then
-            table.insert(neighbors, neighbor)
-        end
-    end
-    return neighbors
-end
-
--- Check if a node is in a list
-function isInList(list, node)
-    for _, n in ipairs(list) do
-        if n.x == node.x and n.y == node.y then
-            return true
-        end
-    end
-    return false
-end
-
--- Calculate distance between two nodes
-function distBetween(a, b)
-    return math.sqrt((a.x - b.x)^2 + (a.y - b.y)^2)
 end
 
 -- Determine direction based on two positions
@@ -173,15 +74,59 @@ function getDirection(from, to)
     end
 end
 
+-- Determine opposite direction
+function getOppositeDirection(direction)
+    local opposites = {
+        Up = "Down",
+        Down = "Up",
+        Left = "Right",
+        Right = "Left",
+        UpRight = "DownLeft",
+        UpLeft = "DownRight",
+        DownRight = "UpLeft",
+        DownLeft = "UpRight"
+    }
+    return opposites[direction]
+end
+
 -- Improved decision-making with aggressive strategy
 function decideNextAction()
     local player = LatestGameState.Players[ao.id]
-    local obstacles = LatestGameState.Obstacles
     local players = LatestGameState.Players
 
     -- Decrease attack cooldown
     if AttackCooldown > 0 then
         AttackCooldown = AttackCooldown - 1
+    end
+
+    -- Check if the bot needs to rest
+    if IsResting then
+        print(colors.blue .. "Resting to regain energy." .. colors.reset)
+        if player.energy >= player.maxEnergy * 0.75 then
+            IsResting = false
+            RanAway = false
+            print(colors.green .. "Energy sufficiently restored. Returning to attack." .. colors.reset)
+        else
+            ao.send({Target = Game, Action = "PlayerRest", Player = ao.id})
+            InAction = false
+            return
+        end
+    elseif player.energy < player.maxEnergy * 0.5 and not RanAway then
+        local nearestOpponent = findNearestOpponent(player, players)
+        if nearestOpponent then
+            print(colors.blue .. "Energy below 50%. Running away from opponent." .. colors.reset)
+            local direction = getOppositeDirection(getDirection(player, nearestOpponent))
+            ao.send({Target = Game, Action = "PlayerMove", Player = ao.id, Direction = direction})
+            RanAway = true
+            InAction = false
+            return
+        end
+    elseif player.energy < player.maxEnergy * 0.5 then
+        IsResting = true
+        print(colors.blue .. "Energy below 50%. Going to rest." .. colors.reset)
+        ao.send({Target = Game, Action = "PlayerRest", Player = ao.id})
+        InAction = false
+        return
     end
 
     -- Find the nearest opponent
@@ -190,18 +135,29 @@ function decideNextAction()
     if nearestOpponent then
         -- If the opponent is in attack range, attack them
         if inRange(player.x, player.y, nearestOpponent.x, nearestOpponent.y, 1) and AttackCooldown <= 0 then
-            print(colors.red .. "Attacking nearest opponent." .. colors.reset)
+            AttackCount = AttackCount + 1
+            print(colors.red .. "Attacking nearest opponent. Attack count: " .. AttackCount .. colors.reset)
             ao.send({Target = Game, Action = "PlayerAttack", Player = ao.id, AttackEnergy = tostring(math.min(player.energy, nearestOpponent.energy + 1))})
             AttackCooldown = 2 -- Set a cooldown before the next attack
+            
+            -- After 5 attacks, start dodging and circling
+            if AttackCount >= 5 then
+                AttackCount = 0
+                print(colors.red .. "Dodging and circling opponent." .. colors.reset)
+                local dodgeDirections = {"UpRight", "UpLeft", "DownRight", "DownLeft"}
+                local bestDirection = dodgeDirections[math.random(#dodgeDirections)]
+                ao.send({Target = Game, Action = "PlayerMove", Player = ao.id, Direction = bestDirection})
+            end
+            
+            -- Increase the count of opponents attacked after an attack
+            if AttackCount == 1 then
+                OpponentsAttacked = OpponentsAttacked + 1
+            end
         else
             -- Move towards the nearest opponent
             print(colors.red .. "Moving towards nearest opponent." .. colors.reset)
-            local path = aStar(player, nearestOpponent, obstacles)
-            if path and #path > 1 then
-                local nextStep = path[2]
-                local direction = getDirection(player, nextStep)
-                ao.send({Target = Game, Action = "PlayerMove", Player = ao.id, Direction = direction})
-            end
+            local direction = getDirection(player, nearestOpponent)
+            ao.send({Target = Game, Action = "PlayerMove", Player = ao.id, Direction = direction})
         end
         InAction = false
         return
